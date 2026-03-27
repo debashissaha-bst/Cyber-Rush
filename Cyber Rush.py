@@ -24,15 +24,18 @@ CAM_LOOK_AHEAD = 6.0
 
 PLAYER_Y_GROUND = 0.0
 PLAYER_Y_JUMP = 3.4
-JUMP_DUR = 0.52
-SLIDE_DUR = 0.55
+JUMP_DUR = 0.58
+SLIDE_DUR = 0.62
 LANE_SWITCH_SPD = 9.0
 
-BASE_SPEED = 14.0
-MAX_SPEED = 42.0
-SPEED_ACCEL = 0.012
+BASE_SPEED = 12.0
+MAX_SPEED = 34.0
+SPEED_ACCEL = 0.008
 
-OBSTACLE_GAP = 18.0
+OBSTACLE_GAP = 24.0
+
+PLAYER_HITS = 3
+HIT_INVINCIBILITY_DUR = 1.0
 
 C_ROAD = (0.06, 0.06, 0.10)
 C_ROAD_LINE = (0.10, 0.95, 0.85)
@@ -64,48 +67,48 @@ C_BUILDING_WIN = [
 DIFFICULTY_PRESETS = {
     1: {
         "name": "EASY",
-        "speed_mult": 0.8,
-        "max_speed_mult": 0.8,
-        "obstacle_gap_mult": 1.5,
+        "speed_mult": 0.72,
+        "max_speed_mult": 0.72,
+        "obstacle_gap_mult": 1.9,
         "pattern_weights": {
-            "single": 0.5,
-            "double": 0.2,
-            "zigzag": 0.1,
-            "flying": 0.1,
-            "spikes": 0.1,
+            "single": 0.60,
+            "double": 0.16,
+            "zigzag": 0.10,
+            "flying": 0.08,
+            "spikes": 0.06,
         },
-        "drone_count_factor": 0.7,
-        "accel_mult": 0.8,
+        "drone_count_factor": 0.55,
+        "accel_mult": 0.70,
     },
     2: {
         "name": "MEDIUM",
-        "speed_mult": 1.0,
-        "max_speed_mult": 1.0,
-        "obstacle_gap_mult": 1.0,
+        "speed_mult": 0.90,
+        "max_speed_mult": 0.90,
+        "obstacle_gap_mult": 1.30,
         "pattern_weights": {
-            "single": 0.4,
-            "double": 0.25,
-            "zigzag": 0.15,
-            "flying": 0.15,
-            "spikes": 0.05,
+            "single": 0.50,
+            "double": 0.20,
+            "zigzag": 0.12,
+            "flying": 0.10,
+            "spikes": 0.08,
         },
-        "drone_count_factor": 1.0,
-        "accel_mult": 1.0,
+        "drone_count_factor": 0.80,
+        "accel_mult": 0.85,
     },
     3: {
         "name": "HARD",
-        "speed_mult": 1.2,
-        "max_speed_mult": 1.2,
-        "obstacle_gap_mult": 0.7,
+        "speed_mult": 1.05,
+        "max_speed_mult": 1.05,
+        "obstacle_gap_mult": 0.95,
         "pattern_weights": {
-            "single": 0.2,
-            "double": 0.3,
-            "zigzag": 0.2,
-            "flying": 0.2,
-            "spikes": 0.1,
+            "single": 0.28,
+            "double": 0.28,
+            "zigzag": 0.18,
+            "flying": 0.16,
+            "spikes": 0.10,
         },
-        "drone_count_factor": 1.5,
-        "accel_mult": 1.2,
+        "drone_count_factor": 1.15,
+        "accel_mult": 1.00,
     },
 }
 
@@ -120,10 +123,6 @@ def clamp(v, lo, hi):
 
 def lerp(a, b, t):
     return a + (b - a) * clamp(t, 0, 1)
-
-
-def deg2rad(d):
-    return d * math.pi / 180.0
 
 
 @dataclass
@@ -198,6 +197,18 @@ class Building:
     win_pattern: List
 
 
+def _triangle_normal(a, b, c):
+    ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+    vx, vy, vz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+    nx = uy * vz - uz * vy
+    ny = uz * vx - ux * vz
+    nz = ux * vy - uy * vx
+    length = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if length == 0:
+        return 0.0, 1.0, 0.0
+    return nx / length, ny / length, nz / length
+
+
 def gen_building(x: float, z: float) -> Building:
     w = random.uniform(3, 9)
     d = random.uniform(3, 9)
@@ -218,7 +229,7 @@ def gen_building(x: float, z: float) -> Building:
     return Building(x, z, w, d, h, ci, wci, wins)
 
 
-def draw_building(b: Building, player_z: float):
+def draw_building(b: Building):
     glDisable(GL_TEXTURE_2D)
     glPushMatrix()
     glTranslatef(b.x, 0, b.z)
@@ -227,6 +238,7 @@ def draw_building(b: Building, player_z: float):
     glColor3f(*bc)
     _draw_box(b.w, b.h, b.d)
 
+    glDisable(GL_LIGHTING)
     wc = C_BUILDING_WIN[b.win_col_idx]
     glColor3f(*wc)
     for wx, wy, ww, wh in b.win_pattern:
@@ -235,6 +247,7 @@ def draw_building(b: Building, player_z: float):
         glScalef(ww, wh, 0.01)
         _draw_box(1, 1, 1)
         glPopMatrix()
+    glEnable(GL_LIGHTING)
 
     glPopMatrix()
     glEnable(GL_TEXTURE_2D)
@@ -244,16 +257,19 @@ def _draw_box(w, h, d):
     hw = w / 2
     hh = h / 2
     hd = d / 2
+
     faces = [
-        [(-hw, -hh, hd), (hw, -hh, hd), (hw, hh, hd), (-hw, hh, hd)],
-        [(hw, -hh, -hd), (-hw, -hh, -hd), (-hw, hh, -hd), (hw, hh, -hd)],
-        [(-hw, -hh, -hd), (-hw, -hh, hd), (-hw, hh, hd), (-hw, hh, -hd)],
-        [(hw, -hh, hd), (hw, -hh, -hd), (hw, hh, -hd), (hw, hh, hd)],
-        [(-hw, hh, hd), (hw, hh, hd), (hw, hh, -hd), (-hw, hh, -hd)],
+        ((0, 0, 1), [(-hw, -hh, hd), (hw, -hh, hd), (hw, hh, hd), (-hw, hh, hd)]),
+        ((0, 0, -1), [(hw, -hh, -hd), (-hw, -hh, -hd), (-hw, hh, -hd), (hw, hh, -hd)]),
+        ((-1, 0, 0), [(-hw, -hh, -hd), (-hw, -hh, hd), (-hw, hh, hd), (-hw, hh, -hd)]),
+        ((1, 0, 0), [(hw, -hh, hd), (hw, -hh, -hd), (hw, hh, -hd), (hw, hh, hd)]),
+        ((0, 1, 0), [(-hw, hh, hd), (hw, hh, hd), (hw, hh, -hd), (-hw, hh, -hd)]),
     ]
+
     glBegin(GL_QUADS)
-    for face in faces:
-        for v in face:
+    for normal, verts in faces:
+        glNormal3f(*normal)
+        for v in verts:
             glVertex3f(*v)
     glEnd()
 
@@ -290,27 +306,35 @@ class Track:
         self._draw_road(player_z)
         self._draw_sky()
         for b in self.buildings_L + self.buildings_R:
-            draw_building(b, player_z)
+            draw_building(b)
 
     def _draw_road(self, pz: float):
         glDisable(GL_TEXTURE_2D)
         hw = TRACK_W / 2
 
+        glEnable(GL_LIGHTING)
         for i in range(VISIBLE_SEGS):
             z0 = pz + i * TRACK_SEG_LEN - TRACK_SEG_LEN
             z1 = pz + (i + 1) * TRACK_SEG_LEN - TRACK_SEG_LEN
 
             glColor3f(*C_ROAD)
             glBegin(GL_QUADS)
+            glNormal3f(0, 1, 0)
             glVertex3f(-hw, 0, z0)
             glVertex3f(hw, 0, z0)
             glVertex3f(hw, 0, z1)
             glVertex3f(-hw, 0, z1)
             glEnd()
 
+        glDisable(GL_LIGHTING)
+        for i in range(VISIBLE_SEGS):
+            z0 = pz + i * TRACK_SEG_LEN - TRACK_SEG_LEN
+            z1 = pz + (i + 1) * TRACK_SEG_LEN - TRACK_SEG_LEN
+
             dash = TRACK_SEG_LEN * 0.45
             dz0 = z0
             dz1 = dz0 + dash
+
             for lane_i in range(1, LANE_COUNT):
                 lx = -hw + lane_i * LANE_W
                 glColor3f(*C_ROAD_LINE)
@@ -328,7 +352,7 @@ class Track:
                 glVertex3f(ex, 0.03, z1)
                 glEnd()
 
-            glColor3f(C_GRID[0], C_GRID[1], C_GRID[2])
+            glColor3f(*C_GRID)
             glLineWidth(1.0)
             glBegin(GL_LINES)
             glVertex3f(-hw, 0.01, z0)
@@ -345,6 +369,7 @@ class Track:
             glEnd()
 
         glLineWidth(1.0)
+        glEnable(GL_LIGHTING)
 
     def _draw_sky(self):
         glDisable(GL_LIGHTING)
@@ -405,20 +430,24 @@ class Obstacle:
         if self.kind == "wall":
             glColor3f(*C_OBSTACLE_A)
             _draw_box(LANE_W * 0.85, 2.0, 0.6)
+            glDisable(GL_LIGHTING)
             glColor3f(1.0, 0.5, 0.5)
             glPushMatrix()
             glTranslatef(0, 1.05, 0)
             _draw_box(LANE_W * 0.85, 0.12, 0.65)
             glPopMatrix()
+            glEnable(GL_LIGHTING)
 
         elif self.kind == "barrier":
             glColor3f(*C_OBSTACLE_B)
             _draw_box(LANE_W * 0.85, 0.9, 0.9)
+            glDisable(GL_LIGHTING)
             glColor3f(1.0, 0.8, 0.3)
             glPushMatrix()
             glTranslatef(0, 0.5, 0)
             _draw_box(LANE_W * 0.85, 0.1, 0.95)
             glPopMatrix()
+            glEnable(GL_LIGHTING)
 
         elif self.kind == "drone":
             bob = math.sin(t * 3.0) * 0.25
@@ -437,11 +466,13 @@ class Obstacle:
                 glScalef(0.55, 0.06, 0.1)
                 _draw_box(1, 1, 1)
                 glPopMatrix()
+            glDisable(GL_LIGHTING)
             glColor3f(1.0, 0.9, 0.0)
             glPushMatrix()
             glTranslatef(0, 0, 0.6)
             _draw_sphere(0.12, 8)
             glPopMatrix()
+            glEnable(GL_LIGHTING)
 
         elif self.kind == "spike":
             for sx in [-LANE_W * 0.25, 0, LANE_W * 0.25]:
@@ -469,29 +500,35 @@ class Obstacle:
 
 def _draw_sphere(r, slices=12):
     q = gluNewQuadric()
+    gluQuadricNormals(q, GLU_SMOOTH)
     gluSphere(q, r, slices, slices)
     gluDeleteQuadric(q)
 
 
 def _draw_cylinder(r, h, slices=12):
     q = gluNewQuadric()
+    gluQuadricNormals(q, GLU_SMOOTH)
     gluCylinder(q, r, r, h, slices, 1)
     gluDeleteQuadric(q)
 
 
 def _draw_pyramid(base, height):
     hb = base / 2
-    glBegin(GL_TRIANGLES)
     apex = (0, height, 0)
     verts = [(-hb, 0, -hb), (hb, 0, -hb), (hb, 0, hb), (-hb, 0, hb)]
+
+    glBegin(GL_TRIANGLES)
     for i in range(4):
         a = verts[i]
         b = verts[(i + 1) % 4]
+        glNormal3f(*_triangle_normal(apex, a, b))
         glVertex3f(*apex)
         glVertex3f(*a)
         glVertex3f(*b)
     glEnd()
+
     glBegin(GL_QUADS)
+    glNormal3f(0, -1, 0)
     for v in verts:
         glVertex3f(*v)
     glEnd()
@@ -521,14 +558,17 @@ class Pickup:
         glRotatef(spin, 0, 1, 0)
 
         if self.kind == "coin":
+            glDisable(GL_LIGHTING)
             glColor3f(*C_COIN)
             glScalef(1, 1, 0.15)
             _draw_sphere(0.28, 12)
             glColor3f(1.0, 0.7, 0.0)
             glScalef(0.6, 0.6, 1)
             _draw_sphere(0.28, 8)
+            glEnable(GL_LIGHTING)
 
         elif self.kind == "shield":
+            glDisable(GL_LIGHTING)
             glColor3f(*C_SHIELD)
             glBegin(GL_POLYGON)
             for i in range(6):
@@ -541,6 +581,7 @@ class Pickup:
                 a = i * math.pi / 3
                 glVertex3f(math.cos(a) * 0.4, math.sin(a) * 0.4, 0)
             glEnd()
+            glEnable(GL_LIGHTING)
 
         elif self.kind == "magnet":
             glColor3f(*C_MAGNET)
@@ -559,6 +600,7 @@ class Pickup:
             glPopMatrix()
 
         elif self.kind == "double":
+            glDisable(GL_LIGHTING)
             glColor3f(*C_DOUBLE)
             glPushMatrix()
             glTranslatef(-0.15, 0, 0)
@@ -570,6 +612,7 @@ class Pickup:
             glScalef(0.7, 1.0, 0.7)
             _draw_sphere(0.28)
             glPopMatrix()
+            glEnable(GL_LIGHTING)
 
         glPopMatrix()
         glEnable(GL_TEXTURE_2D)
@@ -593,6 +636,8 @@ class Player:
         self.magnet = 0.0
         self.double_sc = 0.0
         self.invincible = 0.0
+        self.max_hp = PLAYER_HITS
+        self.hp = PLAYER_HITS
 
         self.score = 0.0
         self.coins = 0
@@ -614,7 +659,7 @@ class Player:
         if not self.jumping and not self.sliding:
             self.jumping = True
             self.jump_t = 0.0
-            self.invincible = 0.1
+            self.invincible = max(self.invincible, 0.1)
 
     def slide(self):
         if not self.jumping:
@@ -649,10 +694,8 @@ class Player:
             v = getattr(self, attr)
             if v > 0:
                 setattr(self, attr, max(0.0, v - dt))
-        if self.double_sc > 0:
-            self.multiplier = 2
-        else:
-            self.multiplier = 1
+
+        self.multiplier = 2 if self.double_sc > 0 else 1
 
         self.trail_timer -= dt
         if self.trail_timer <= 0:
@@ -671,26 +714,28 @@ class Player:
                 3,
             )
 
-        if self.shield > 0:
-            if random.random() < 0.3:
-                a = random.uniform(0, 2 * math.pi)
-                particles.emit(
-                    self.x + math.cos(a) * 0.7,
-                    self.y + 0.8 + math.sin(a) * 0.7,
-                    self.z,
-                    math.cos(a) * 1.5,
-                    math.sin(a) * 1.5,
-                    0,
-                    0.2,
-                    C_SHIELD,
-                    4.0,
-                )
+        if self.shield > 0 and random.random() < 0.3:
+            a = random.uniform(0, 2 * math.pi)
+            particles.emit(
+                self.x + math.cos(a) * 0.7,
+                self.y + 0.8 + math.sin(a) * 0.7,
+                self.z,
+                math.cos(a) * 1.5,
+                math.sin(a) * 1.5,
+                0,
+                0.2,
+                C_SHIELD,
+                4.0,
+            )
 
     def collision_box(self):
         h = 0.7 if self.sliding else 1.7
         return (self.x - 0.45, self.x + 0.45, self.y, self.y + h)
 
     def draw(self, t: float):
+        if self.invincible > 0 and int(self.invincible * 12) % 2 == 0:
+            return
+
         glDisable(GL_TEXTURE_2D)
         glPushMatrix()
         glTranslatef(self.x, self.y, self.z)
@@ -699,11 +744,13 @@ class Player:
         glScalef(1, scale_y, 1)
 
         if self.shield > 0:
+            glDisable(GL_LIGHTING)
             glColor4f(*C_SHIELD, 0.25)
             glEnable(GL_BLEND)
             glBlendFunc(GL_SRC_ALPHA, GL_ONE)
             _draw_sphere(1.1, 14)
             glDisable(GL_BLEND)
+            glEnable(GL_LIGHTING)
 
         leg_swing = math.sin(t * 10.0) * 25.0 * (0 if self.jumping else 1)
         for lx, phase in [(-0.22, 1), (0.22, -1)]:
@@ -739,12 +786,14 @@ class Player:
         _draw_sphere(0.28, 12)
         glPopMatrix()
 
+        glDisable(GL_LIGHTING)
         glColor3f(0.8, 1.0, 1.0)
         glPushMatrix()
         glTranslatef(0, 1.62, 0.22)
         glScalef(0.5, 0.18, 0.2)
         _draw_box(1, 1, 1)
         glPopMatrix()
+        glEnable(GL_LIGHTING)
 
         glPopMatrix()
         glEnable(GL_TEXTURE_2D)
@@ -773,7 +822,7 @@ class HUD:
         glVertex2f(x, y + h)
         glEnd()
 
-    def draw(self, player: Player, speed: float, t: float):
+    def draw(self, player: Player, speed: float, t: float, speed_min: float, speed_max: float):
         glMatrixMode(GL_PROJECTION)
         glPushMatrix()
         glLoadIdentity()
@@ -793,7 +842,8 @@ class HUD:
 
         self._blit(f"{int(player.distance)}m", self.f_med, (180, 180, 220), SW - 255, SH - 90)
 
-        spd_pct = (speed - BASE_SPEED) / (MAX_SPEED - BASE_SPEED)
+        denom = max(0.001, speed_max - speed_min)
+        spd_pct = clamp((speed - speed_min) / denom, 0.0, 1.0)
         glColor4f(0, 0, 0, 0.5)
         self._rect(14, SH - 34, 180, 22)
         glColor4f(0.1, 0.9, 0.7, 0.85)
@@ -813,8 +863,9 @@ class HUD:
             self._blit(f"x{player.multiplier} MULTIPLIER", self.f_med, c, SW // 2 - 80, SH - 38)
 
         self._blit(f"◆ {player.coins}", self.f_med, (255, 220, 40), 16, SH - 80)
+        self._blit(f"HP {player.hp}/{player.max_hp}", self.f_med, (255, 90, 120), 16, SH - 108)
 
-        py = SH - 120
+        py = SH - 145
         if player.shield > 0:
             self._draw_powerup_bar("SHIELD", player.shield, 5.0, (20, 180, 255), py)
             py -= 28
@@ -838,7 +889,7 @@ class HUD:
         glPopMatrix()
 
     def _draw_powerup_bar(self, label, val, max_val, color, y):
-        pct = val / max_val
+        pct = clamp(val / max_val, 0.0, 1.0)
         glColor4f(0, 0, 0, 0.5)
         self._rect(14, y, 130, 20)
         glColor4f(*[c / 255 for c in color], 0.85)
@@ -896,13 +947,14 @@ class HUD:
 
         lines = [
             "← / → or  A / D  —  Switch Lane (A=right, D=left)",
-            "SPACE / ↑        —  Jump (brief invincibility on takeoff)",
+            "SPACE / ↑        —  Jump",
             "↓ / S            —  Slide",
             "P                —  Pause",
+            "You can take 3 hits before game over",
         ]
         for i, l in enumerate(lines):
             self._blit(l, self.f_sm, (160, 200, 220), SW // 2 - 155, SH // 2 + 45 + i * 22)
-        self._blit("[ SPACE ] TO START", self.f_big, (240, 200, 20), SW // 2 - 165, SH // 2 + 135)
+        self._blit("[ SPACE ] TO START", self.f_big, (240, 200, 20), SW // 2 - 165, SH // 2 + 155)
         glDisable(GL_BLEND)
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
@@ -942,7 +994,6 @@ class Spawner:
         self.pickups: List[Pickup] = []
         self._next_obstacle_z = 80.0
         self._next_pickup_z = 30.0
-        self._coin_streak = 0
         self.gap_mult = 1.0
         self.pattern_weights = DIFFICULTY_PRESETS[2]["pattern_weights"]
         self.drone_factor = 1.0
@@ -959,11 +1010,11 @@ class Spawner:
         effective_gap = OBSTACLE_GAP * self.gap_mult
         while self._next_obstacle_z < look_ahead:
             self._spawn_obstacle_group(self._next_obstacle_z, speed)
-            self._next_obstacle_z += effective_gap + random.uniform(0, 14)
+            self._next_obstacle_z += effective_gap + random.uniform(4, 16)
 
         while self._next_pickup_z < look_ahead:
             self._spawn_pickup(self._next_pickup_z)
-            self._next_pickup_z += random.uniform(12, 28)
+            self._next_pickup_z += random.uniform(10, 24)
 
         cull = player_z - 10.0
         self.obstacles = [o for o in self.obstacles if o.z > cull]
@@ -973,7 +1024,7 @@ class Spawner:
         patterns = list(self.pattern_weights.keys())
         weights = list(self.pattern_weights.values())
         pattern = random.choices(patterns, weights)[0]
-        speed_tier = (speed - BASE_SPEED) / (MAX_SPEED - BASE_SPEED)
+        speed_tier = clamp((speed - BASE_SPEED) / max(0.001, MAX_SPEED - BASE_SPEED), 0.0, 1.0)
 
         if pattern == "single":
             lane = random.randint(0, 2)
@@ -987,33 +1038,33 @@ class Spawner:
             self.obstacles.append(Obstacle(start + 1, z, kind))
 
         elif pattern == "zigzag":
-            for i in range(3):
+            for i in range(2 + int(speed_tier > 0.6)):
                 lane = i % 3
                 zoff = i * 8.0
                 self.obstacles.append(Obstacle(lane, z + zoff, "barrier"))
 
         elif pattern == "flying":
-            n = 1 + int(speed_tier * self.drone_factor * 2)
-            lanes = random.sample(range(3), min(n, 3))
+            n = 1 + int(speed_tier * self.drone_factor * 1.5)
+            lanes = random.sample(range(3), min(n, 2 if speed_tier < 0.7 else 3))
             for lane in lanes:
-                self.obstacles.append(Obstacle(lane, z + random.uniform(0, 12), "drone"))
+                self.obstacles.append(Obstacle(lane, z + random.uniform(0, 10), "drone"))
 
-        elif pattern == "spikes" and speed_tier > 0.2:
+        elif pattern == "spikes" and speed_tier > 0.3:
             lane = random.randint(0, 2)
             self.obstacles.append(Obstacle(lane, z, "spike"))
-            if speed_tier > 0.5 and random.random() < 0.5:
+            if speed_tier > 0.75 and random.random() < 0.35:
                 other = (lane + 1) % 3
                 self.obstacles.append(Obstacle(other, z + 10, "spike"))
 
     def _spawn_pickup(self, z: float):
-        kind_weights = {"coin": 60, "shield": 12, "magnet": 12, "double": 16}
+        kind_weights = {"coin": 64, "shield": 12, "magnet": 12, "double": 12}
         kinds = list(kind_weights.keys())
         weights = list(kind_weights.values())
         kind = random.choices(kinds, weights)[0]
 
         if kind == "coin":
             lane = random.randint(0, 2)
-            n = random.randint(3, 8)
+            n = random.randint(4, 8)
             for i in range(n):
                 self.pickups.append(Pickup(lane, z + i * 2.5, "coin"))
         else:
@@ -1079,10 +1130,10 @@ class Game:
                 self.state = "playing"
 
     def update(self, dt: float):
-        if self.state not in ("playing",):
+        if self.state != "playing":
             return
-        self.t += dt
 
+        self.t += dt
         self.speed = min(self.max_speed, self.speed + self.accel * dt * 60)
 
         dz = self.speed * dt
@@ -1103,6 +1154,7 @@ class Game:
                         pk.lane = self.player.lane
 
         px1, px2, py1, py2 = self.player.collision_box()
+
         for pk in self.spawner.pickups:
             if pk.collected:
                 continue
@@ -1126,35 +1178,50 @@ class Game:
             for ob in self.spawner.obstacles:
                 if not ob.active:
                     continue
+
                 ox1, ox2, oy1, oy2, oz, ohd = ob.collision_box()
                 if abs(ob.z - self.player.z) > ohd + 0.6:
                     continue
+
                 if px1 < ox2 and px2 > ox1 and py1 < oy2 and py2 > oy1:
+                    ob.active = False
+
                     if self.player.shield > 0:
                         self.player.shield = 0
-                        ob.active = False
-                        self.particles.emit(ob.x, oy2 * 0.5, ob.z, 0, 2, 0, 0.7, C_SHIELD, 6, 30)
-                        self.cam_shake = 0.4
+                        self.particles.emit(
+                            ob.x, max(oy2 * 0.5, 0.8), ob.z,
+                            0, 2, 0, 0.7, C_SHIELD, 6, 30
+                        )
+                        self.cam_shake = 0.35
                     else:
-                        self.player.alive = False
-                        self.state = "dead"
-                        self.cam_shake = 1.0
-                        for _ in range(60):
-                            a = random.uniform(0, 2 * math.pi)
-                            s = random.uniform(1, 6)
-                            self.particles.emit(
-                                self.player.x,
-                                self.player.y + 0.9,
-                                self.player.z,
-                                math.cos(a) * s,
-                                random.uniform(2, 8),
-                                math.sin(a) * s * 0.3,
-                                random.uniform(0.5, 1.2),
-                                C_OBSTACLE_A,
-                                5,
-                                1,
-                            )
-                        break
+                        self.player.hp -= 1
+                        self.player.invincible = HIT_INVINCIBILITY_DUR
+                        self.cam_shake = 0.60
+                        self.particles.emit(
+                            ob.x, max(oy2 * 0.5, 0.8), ob.z,
+                            0, 2.5, 0, 0.45, C_OBSTACLE_A, 5, 24
+                        )
+
+                        if self.player.hp <= 0:
+                            self.player.alive = False
+                            self.state = "dead"
+                            self.cam_shake = 1.0
+                            for _ in range(60):
+                                a = random.uniform(0, 2 * math.pi)
+                                s = random.uniform(1, 6)
+                                self.particles.emit(
+                                    self.player.x,
+                                    self.player.y + 0.9,
+                                    self.player.z,
+                                    math.cos(a) * s,
+                                    random.uniform(2, 8),
+                                    math.sin(a) * s * 0.3,
+                                    random.uniform(0.5, 1.2),
+                                    C_OBSTACLE_A,
+                                    5,
+                                    1,
+                                )
+                    break
 
         self.cam_shake = max(0, self.cam_shake - dt * 3.0)
 
@@ -1179,18 +1246,27 @@ class Game:
 
         glEnable(GL_LIGHTING)
         glEnable(GL_LIGHT0)
-        glLightfv(GL_LIGHT0, GL_POSITION, [self.player.x, 6, self.player.z, 1])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.7, 0.8, 1.0, 1])
-        glLightfv(GL_LIGHT0, GL_AMBIENT, [0.08, 0.05, 0.12, 1])
-        glLightf(GL_LIGHT0, GL_QUADRATIC_ATTENUATION, 0.002)
+        glEnable(GL_LIGHT1)
+
+        glLightfv(GL_LIGHT0, GL_POSITION, [self.player.x, 7.5, self.player.z + 2.0, 1.0])
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, [1.00, 0.92, 0.88, 1.0])
+        glLightfv(GL_LIGHT0, GL_AMBIENT, [0.18, 0.14, 0.22, 1.0])
+
+        glLightfv(GL_LIGHT1, GL_POSITION, [self.player.x, 5.0, self.player.z - 6.0, 1.0])
+        glLightfv(GL_LIGHT1, GL_DIFFUSE, [0.25, 0.45, 0.90, 1.0])
+        glLightfv(GL_LIGHT1, GL_AMBIENT, [0.00, 0.00, 0.00, 1.0])
+
+        glLightf(GL_LIGHT0, GL_QUADRATIC_ATTENUATION, 0.0015)
+        glLightf(GL_LIGHT1, GL_QUADRATIC_ATTENUATION, 0.0030)
+
         glEnable(GL_COLOR_MATERIAL)
         glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
-        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, [0.05, 0.03, 0.10, 1])
+        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, [0.16, 0.12, 0.20, 1.0])
 
         glEnable(GL_FOG)
         glFogi(GL_FOG_MODE, GL_LINEAR)
-        glFogfv(GL_FOG_COLOR, [0.12, 0.12, 0.25, 1])
-        glFogf(GL_FOG_START, 40.0)
+        glFogfv(GL_FOG_COLOR, [0.14, 0.14, 0.28, 1])
+        glFogf(GL_FOG_START, 52.0)
         glFogf(GL_FOG_END, VISIBLE_SEGS * TRACK_SEG_LEN * 0.9)
 
         self.track.draw(self.player.z)
@@ -1207,13 +1283,13 @@ class Game:
         glDisable(GL_FOG)
 
         if self.state in ("playing", "dead"):
-            self.hud.draw(self.player, self.speed, self.t)
+            self.hud.draw(self.player, self.speed, self.t, self.base_speed, self.max_speed)
         if self.state == "dead":
             self.hud.draw_gameover(self.player)
         if self.state == "title":
             self.hud.draw_title(self.difficulty)
         if self.state == "paused":
-            self.hud.draw(self.player, self.speed, self.t)
+            self.hud.draw(self.player, self.speed, self.t, self.base_speed, self.max_speed)
             self.hud.draw_pause()
 
 
@@ -1228,6 +1304,8 @@ def main():
     glClearColor(0.12, 0.12, 0.25, 1.0)
     glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST)
     glEnable(GL_NORMALIZE)
+    glEnable(GL_CULL_FACE)
+    glCullFace(GL_BACK)
 
     game = Game()
     clock = pygame.time.Clock()
@@ -1236,8 +1314,7 @@ def main():
         dt = clock.tick(FPS) / 1000.0
         dt = min(dt, 0.05)
 
-        events = pygame.event.get()
-        for ev in events:
+        for ev in pygame.event.get():
             if ev.type == QUIT:
                 pygame.quit()
                 sys.exit()
